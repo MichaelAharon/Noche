@@ -1,13 +1,14 @@
 """
 YouTube Transcript Extraction Module
 
-Fetches transcripts from YouTube videos, supporting multiple languages
-and automatic translation to English.
+Fetches transcripts from YouTube videos using youtube-transcript-api v1.x.
+Supports multiple languages and automatic translation to English.
 """
 
 import re
 from typing import Optional
-from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
+from youtube_transcript_api import YouTubeTranscriptApi
+from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptFound
 
 
 def extract_video_id(url: str) -> Optional[str]:
@@ -28,11 +29,19 @@ def extract_video_id(url: str) -> Optional[str]:
         match = re.search(pattern, url)
         if match:
             return match.group(1)
-    # Last resort: treat as raw video ID if 11 chars
+    # Last resort: treat as raw video ID if exactly 11 chars
     stripped = url.strip()
     if re.match(r'^[a-zA-Z0-9_-]{11}$', stripped):
         return stripped
     return None
+
+
+def _snippets_to_list(fetched) -> list:
+    """Convert FetchedTranscript snippets to plain dicts for uniform handling."""
+    return [
+        {"text": s.text, "start": s.start, "duration": s.duration}
+        for s in fetched
+    ]
 
 
 def fetch_transcript(video_id: str, preferred_langs: Optional[list] = None) -> dict:
@@ -48,10 +57,13 @@ def fetch_transcript(video_id: str, preferred_langs: Optional[list] = None) -> d
     if preferred_langs is None:
         preferred_langs = ['en', 'en-US', 'en-GB', 'en-CA', 'en-AU']
 
+    api = YouTubeTranscriptApi()
+
     try:
-        # First try direct fetch with preferred languages
+        # Fast path — fetch directly in a preferred language
         try:
-            segments = YouTubeTranscriptApi.get_transcript(video_id, languages=preferred_langs)
+            fetched = api.fetch(video_id, languages=preferred_langs)
+            segments = _snippets_to_list(fetched)
             return {
                 'text': ' '.join(seg['text'] for seg in segments),
                 'segments': segments,
@@ -61,21 +73,22 @@ def fetch_transcript(video_id: str, preferred_langs: Optional[list] = None) -> d
         except NoTranscriptFound:
             pass
 
-        # List all available transcripts and attempt translation
-        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+        # List all available transcripts
+        transcript_list = api.list(video_id)
 
-        # Try to find a manual transcript first (more accurate)
+        # Prefer manual over auto-generated (manual is more accurate)
         try:
             transcript = transcript_list.find_manually_created_transcript(preferred_langs)
+            was_translated = False
         except NoTranscriptFound:
-            # Fall back to auto-generated
             try:
                 transcript = transcript_list.find_generated_transcript(preferred_langs)
+                was_translated = False
             except NoTranscriptFound:
-                # Grab whatever is available and translate
+                # Nothing in English — grab whatever exists and translate
                 all_transcripts = list(transcript_list)
                 if not all_transcripts:
-                    raise RuntimeError("No transcripts available for this video.")
+                    raise RuntimeError("No transcripts are available for this video.")
                 transcript = all_transcripts[0]
                 if transcript.language_code not in preferred_langs:
                     transcript = transcript.translate('en')
@@ -83,20 +96,13 @@ def fetch_transcript(video_id: str, preferred_langs: Optional[list] = None) -> d
                 else:
                     was_translated = False
 
-                segments = transcript.fetch()
-                return {
-                    'text': ' '.join(seg['text'] for seg in segments),
-                    'segments': segments,
-                    'language': transcript.language_code,
-                    'was_translated': was_translated,
-                }
-
-        segments = transcript.fetch()
+        fetched = transcript.fetch()
+        segments = _snippets_to_list(fetched)
         return {
             'text': ' '.join(seg['text'] for seg in segments),
             'segments': segments,
             'language': transcript.language_code,
-            'was_translated': False,
+            'was_translated': was_translated,
         }
 
     except TranscriptsDisabled:
@@ -104,6 +110,8 @@ def fetch_transcript(video_id: str, preferred_langs: Optional[list] = None) -> d
             "Transcripts are disabled for this video. "
             "The video owner has turned off subtitles/captions."
         )
+    except RuntimeError:
+        raise
     except Exception as exc:
         raise RuntimeError(f"Failed to fetch transcript: {exc}") from exc
 

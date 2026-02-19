@@ -1,0 +1,18 @@
+# API keys — never commit
+sales_analyzer/.env
+
+# Analysis outputs — usually too large for git
+sales_outputs/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+
+# IDE
+.idea/workspace.xml
+.idea/usage.statistics.xml
+*.iml
